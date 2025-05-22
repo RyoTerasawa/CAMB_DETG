@@ -70,6 +70,8 @@
         real(dl) :: HMcode_A_baryon=3.13_dl
         real(dl) :: HMcode_eta_baryon=0.603_dl
         real(dl) :: HMcode_logT_AGN=7.8_dl
+        real(dl) :: HMcode_DETG_beta=0.0_dl
+        real(dl) :: HMcode_DETG_p=0.0_dl       
         !!AM - Added these types for HMcode
         integer, private :: imead !!AM - added these for HMcode, need to be visible to all subroutines and functions
         real(dl), private :: om_m,om_v,fnu,omm0, acur, w_hf, wa_hf
@@ -118,6 +120,8 @@
         REAL(dl) :: A_baryon=3.13
         REAL(dl) :: eta_baryon=0.603
         REAL(dl) :: logT_AGN=7.8
+        REAL(dl) :: DETG_beta=0.0
+        REAL(dl) :: DETG_p=0.0    
     END TYPE HM_cosmology
 
     TYPE HM_tables
@@ -540,7 +544,7 @@
     class(THalofit) :: this
     Class(CAMBdata) :: State
     TYPE(MatterPowerData) :: CAMB_Pk
-    REAL(dl) :: z, k
+    REAL(dl) :: z, k, Om_v, DETG_alpha
     REAL(dl) :: p1h, p2h, pfull, plin
     REAL(dl), ALLOCATABLE :: p_den(:,:), p_num(:,:)
     INTEGER :: i, j, ii, nk, nz
@@ -633,17 +637,37 @@
 
         ELSE
 
+            !Prepare DETG_alpha for each z
+            if (cosi%DETG_beta/=0._dl) then
+                Om_v = Omega_v_hm(z, cosi)
+                DETG_alpha = 1.0 - cosi%DETG_beta*(Om_v/cosi%om_v)**cosi%DETG_p  
+            else 
+                DETG_alpha = 1.0   
+            end if
+                
             !Initiliasation for the halomodel calculation (needs to be done for each z)
-            CALL this%halomod_init(z,lut,cosi)
+            if (DETG_alpha>0._dl) then
+                CALL this%halomod_init(z,lut,cosi)
+            end if
             if (global_error_flag/=0) return
 
             !Loop over k values and calculate P(k)
             !$OMP PARALLEL DO DEFAULT(SHARED), private(k,plin,pfull,p1h,p2h)
             DO i=1,nk
-                k=exp(CAMB_Pk%log_kh(i))
-                plin=p_lin(k,z,0,cosi)
-                CALL this%halomod(k,p1h,p2h,pfull,plin,lut,cosi)
-                CAMB_Pk%nonlin_ratio(i,j)=sqrt(pfull/plin)
+                if (DETG_alpha<=0._dl) then
+                    if (j==1) then
+                        CAMB_Pk%nonlin_ratio(i,j)=1.0
+                    else
+                        CAMB_Pk%nonlin_ratio(i,j)=CAMB_Pk%nonlin_ratio(i,j-1)
+                    end if
+                else
+                    k=exp(CAMB_Pk%log_kh(i))              
+                    plin=p_lin(k,z,0,cosi)
+                    CALL this%halomod(k,p1h,p2h,pfull,plin,lut,cosi)
+                    !Below, plin must be the DETG_beta=0 case, as assumed by the main CAMB module
+                    !So we undo the DETG_alpha that was applied earlier  
+                    CAMB_Pk%nonlin_ratio(i,j)=sqrt(DETG_alpha*pfull/plin)
+                endif
             END DO
             !$OMP END PARALLEL DO
 
@@ -1058,8 +1082,12 @@
     IF(this%halofit_version==halofit_mead2015 .OR. this%halofit_version==halofit_mead2016)  THEN
         cosm%A_baryon = this%HMcode_A_baryon
         cosm%eta_baryon = this%HMcode_eta_baryon
+        cosm%DETG_beta = this%HMcode_DETG_beta
+        cosm%DETG_p = this%HMcode_DETG_p
     ELSE IF(this%halofit_version==halofit_mead2020_feedback) THEN
         cosm%logT_AGN = this%HMcode_logT_AGN
+        cosm%DETG_beta = this%HMcode_DETG_beta
+        cosm%DETG_p = this%HMcode_DETG_p
     END IF
 
     !Write out cosmological parameters if necessary
@@ -1666,7 +1694,7 @@
 
     FUNCTION p_lin(k,z,itype,cosm)
     !Looks up the value for the linear power spectrum
-    REAL(dl) :: p_lin
+    REAL(dl) :: p_lin, Om_v, DETG_alpha
     REAL(dl), INTENT (IN) :: k, z
     REAL(dl) growth2
     INTEGER, INTENT(IN) :: itype
@@ -1681,7 +1709,21 @@
     else
         growth2 = grow(z,cosm)**2 !never actually needed
     end if
-    p_lin=growth2*find_pk(k,itype,cosm)
+
+    !Mod starts here
+    if (cosm%DETG_beta/=0._dl) then
+        Om_v = Omega_v_hm(z, cosm)
+        DETG_alpha = 1.0 - cosm%DETG_beta*(Om_v/cosm%om_v)**cosm%DETG_p  
+        if (DETG_alpha<=0._dl) then
+            DETG_alpha = 1.0
+        end if
+    else 
+        DETG_alpha = 1.0   
+    end if
+    p_lin=DETG_alpha*growth2*find_pk(k,itype,cosm)
+    !Mod ends here
+
+    !p_lin=growth2*find_pk(k,itype,cosm)
 
     END FUNCTION p_lin
 
@@ -2040,14 +2082,22 @@
 
     FUNCTION sigma_lut(r,z,cosm)
     !Finds sigma_cold(R) from look-up table
-    REAL(dl) :: sigma_lut
+    REAL(dl) :: sigma_lut, Om_v, DETG_alpha
     REAL(dl), INTENT(IN) :: r, z
     TYPE(HM_cosmology), INTENT(IN) :: cosm
     INTEGER, PARAMETER :: iorder=iorder_sigma_interpolation
     INTEGER, PARAMETER :: ifind=ifind_sigma_interpolation
     INTEGER, PARAMETER :: imeth=imeth_sigma_interpolation
 
-    sigma_lut=grow(z,cosm)*exp(find(log(r),cosm%log_r_sigma,cosm%log_sigma,cosm%nsig,iorder,ifind,imeth))
+    !RT add 2025/04/16
+    if (cosm%DETG_beta/=0._dl) then
+        Om_v = Omega_v_hm(z, cosm)
+        DETG_alpha = 1.0 - cosm%DETG_beta*(Om_v/cosm%om_v)**cosm%DETG_p  
+    else 
+        DETG_alpha = 1.0   
+    end if
+
+    sigma_lut=sqrt(DETG_alpha/(1.0-cosm%DETG_beta))*grow(z,cosm)*exp(find(log(r),cosm%log_r_sigma,cosm%log_sigma,cosm%nsig,iorder,ifind,imeth))
 
     END FUNCTION sigma_lut
 
@@ -2480,6 +2530,18 @@
     w_de_hm=cosm%w+(1-a)*cosm%wa
 
     END FUNCTION w_de_hm
+
+    FUNCTION Omega_v_hm(z,cosm)
+    !This calculates omega_v variations with z!
+    REAL(dl) :: Omega_v_hm
+    REAL(dl), INTENT(IN) :: z
+    REAL(dl) :: om_v
+    TYPE(HM_cosmology), INTENT(IN) :: cosm
+
+    om_v=cosm%om_v
+    Omega_v_hm=om_v/Hubble2(z,cosm)
+
+    END FUNCTION Omega_v_hm
 
     FUNCTION Omega_m_hm(z,cosm)
     !This calculates omega_m variations with z!
