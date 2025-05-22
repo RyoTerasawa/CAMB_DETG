@@ -1,6 +1,21 @@
 ===================
-CAMB
+CAMB_DETG
 ===================
+
+========================================================
+
+This is a fork of the original CAMB code, whose original README.srt reads as below this box. We modify the original code such that the nonlinear :math:`P(k,z)` accounts for modified linear power spectrum of the form :math:`P_L(k,z) = P_L(k,z)_{LCDM} (1 - \beta (Omega_{DE}(z)/Omega_{DE}(z=0))^p)`. This phenomenological model, named "Dark Energy Tracking Growth (DETG) model" was proposed in Lin et al. (https://arxiv.org/abs/2308.16183).
+
+The two model parameters, beta and p can be passed to the code via::
+
+   camb.nonlinear.Halofit("HMCode_A_baryon": A, "HMCode_eta_baryon":eta, 'HMCode_DETG_beta': beta, 'HMCode_DETG_p': p)
+
+We name this modified version CAMB_DETG. If you use it for your research, please consider citing the paper below in yours:
+
+https://arxiv.org/abs/2505.09176
+
+========================================================
+
 :CAMB: Code for Anisotropies in the Microwave Background
 :Author: Antony Lewis and Anthony Challinor
 :Homepage: https://camb.info/
